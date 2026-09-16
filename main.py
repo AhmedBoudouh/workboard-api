@@ -56,6 +56,21 @@ def find_task_by_id(task_id) -> TasksOut | None:
             return task
 
 
+def filter_tasks(status: StatusVar | None = None, priority: PriorityVar | None = None):
+    result = []
+    if not status and not priority:
+        result = tasks_db
+    for item in tasks_db:
+        if item.status == status and priority is None:
+            result.append(item)
+        if item.priority == priority and status is None:
+            result.append(item)
+        if item.status == status and item.priority == priority:
+            result.append(item)
+
+    return result
+
+
 @app.get("/health", status_code=status.HTTP_200_OK)
 async def get_health():
     return {"status": "ok"}
@@ -74,8 +89,11 @@ async def create_tasks(taskin: TasksIn) -> TasksOut:
 
 
 @app.get("/tasks")
-async def get_tasks() -> list[TasksOut]:
-    return tasks_db
+async def get_tasks(
+    status: StatusVar | None = None, priority: PriorityVar | None = None
+):
+
+    return filter_tasks(status, priority)
 
 
 @app.get("/tasks/{task_id}", status_code=status.HTTP_200_OK)
