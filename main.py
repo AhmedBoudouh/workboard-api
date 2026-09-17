@@ -1,7 +1,9 @@
 # WorkBoard API project
 # Requirement WB-001: Creating and viewing tasks
 
-from fastapi import FastAPI, HTTPException, status
+import math
+
+from fastapi import FastAPI, HTTPException, status, Query
 from pydantic import BaseModel, Field
 from enum import Enum
 import itertools
@@ -30,6 +32,19 @@ class PriorityVar(str, Enum):
     high = "high"
 
 
+class TaskFieldSort(str, Enum):
+    id = "id"
+    status = "status"
+    created_at = "created_at"
+    title = "title"
+    priority = "priority"
+
+
+class SortOrder(str, Enum):
+    asc = "asc"
+    desc = "desc"
+
+
 class TasksIn(BaseModel):
     title: str = Field(min_length=3, max_length=100)
     description: str | None = Field(default=None, max_length=500)
@@ -48,6 +63,14 @@ class UpdateData(BaseModel):
     description: str | None = Field(default=None, max_length=500)
     priority: PriorityVar | None = None
     status: StatusVar | None = None
+
+
+class PageSortTask(BaseModel):
+    items: list[TasksOut]
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
 
 
 def find_task_by_id(task_id) -> TasksOut | None:
@@ -71,15 +94,19 @@ def filter_tasks(status: StatusVar | None = None, priority: PriorityVar | None =
     return result
 
 
+def order_reverse(order):
+    return order == SortOrder.desc
+
+
 @app.get("/health", status_code=status.HTTP_200_OK)
 async def get_health():
     return {"status": "ok"}
 
 
 @app.post("/tasks", status_code=201)
-async def create_tasks(taskin: TasksIn) -> TasksOut:
+async def create_tasks(task_in: TasksIn) -> TasksOut:
     task = TasksOut(
-        **taskin.model_dump(),
+        **task_in.model_dump(),
         id=next_id(),
         created_at=datetime.now(timezone.utc),
         status="todo"
@@ -90,10 +117,54 @@ async def create_tasks(taskin: TasksIn) -> TasksOut:
 
 @app.get("/tasks")
 async def get_tasks(
-    status: StatusVar | None = None, priority: PriorityVar | None = None
-):
+    status: StatusVar | None = None,
+    priority: PriorityVar | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    sort_by: TaskFieldSort = Query(TaskFieldSort.id),
+    order: SortOrder = Query(SortOrder.asc),
+) -> PageSortTask:
 
-    return filter_tasks(status, priority)
+    filtered_tasks = filter_tasks(status, priority)
+    priority_rank = {"low": 1, "medium": 2, "high": 3}
+    status_rank = {"todo": 1, "in_progress": 2, "done": 3}
+
+    if sort_by == TaskFieldSort.priority:
+
+        sorted_tasks = sorted(
+            filtered_tasks,
+            key=lambda task: priority_rank[getattr(task, sort_by.value)],
+            reverse=order_reverse(order),
+        )
+
+    elif sort_by == TaskFieldSort.status:
+        sorted_tasks = sorted(
+            filtered_tasks,
+            key=lambda task: status_rank[getattr(task, sort_by.value)],
+            reverse=order_reverse(order),
+        )
+
+    else:
+        sorted_tasks = sorted(
+            filtered_tasks,
+            key=lambda task: getattr(task, sort_by.value),
+            reverse=order_reverse(order),
+        )
+
+    total = len(sorted_tasks)
+    total_pages = math.ceil(total / page_size)
+
+    start = (page - 1) * page_size
+    end = page * page_size
+
+    result = sorted_tasks[start:end]
+    return {
+        "items": result,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+    }
 
 
 @app.get("/tasks/{task_id}", status_code=status.HTTP_200_OK)
@@ -101,7 +172,7 @@ async def get_tasks_by_id(task_id: int):
     task = find_task_by_id(task_id)
     if not task:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="task mot found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="task not found"
         )
     return task
 
@@ -112,7 +183,7 @@ async def update_tasks(task_id: int, data: UpdateData):
     task = find_task_by_id(task_id)
     if not task:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="task mot found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="task not found"
         )
 
     stored_data = task.model_dump()
