@@ -1,9 +1,13 @@
 # WorkBoard API project
-# Requirement WB-001: Creating and viewing tasks
+# WB-001: Creating and viewing tasks
+# WB-002 — Update and Delete Tasks
+# WB-003: Task Filtering
+# WB-004: Task Sorting and Pagination
+# WB-005 Dependency Injection
 
 import math
 
-from fastapi import FastAPI, HTTPException, status, Query
+from fastapi import FastAPI, HTTPException, status, Query, Depends
 from pydantic import BaseModel, Field
 from enum import Enum
 import itertools
@@ -73,10 +77,12 @@ class PageSortTask(BaseModel):
     total_pages: int
 
 
-def find_task_by_id(task_id) -> TasksOut | None:
+def find_task_by_id(task_id: int) -> TasksOut | None:
     for task in tasks_db:
         if task.id == task_id:
+
             return task
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
 
 
 def filter_tasks(status: StatusVar | None = None, priority: PriorityVar | None = None):
@@ -168,24 +174,15 @@ async def get_tasks(
 
 
 @app.get("/tasks/{task_id}", status_code=status.HTTP_200_OK)
-async def get_tasks_by_id(task_id: int):
-    task = find_task_by_id(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="task not found"
-        )
+async def get_tasks_by_id(task: Annotated[TasksOut, Depends(find_task_by_id)]):
+
     return task
 
 
-##WB-002 — Update and Delete Tasks
 @app.patch("/tasks/{task_id}", status_code=status.HTTP_200_OK)
-async def update_tasks(task_id: int, data: UpdateData):
-    task = find_task_by_id(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="task not found"
-        )
-
+async def update_tasks(
+    task: Annotated[TasksOut, Depends(find_task_by_id)], data: UpdateData
+):
     stored_data = task.model_dump()
     updated_data = data.model_dump(exclude_unset=True)
 
@@ -196,10 +193,5 @@ async def update_tasks(task_id: int, data: UpdateData):
 
 
 @app.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_task(task_id: int):
-    task = find_task_by_id(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
-        )
+async def delete_task(task: Annotated[TasksOut, Depends(find_task_by_id)]):
     tasks_db.remove(task)
