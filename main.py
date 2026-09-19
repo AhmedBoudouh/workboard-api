@@ -4,6 +4,7 @@
 # WB-003: Task Filtering
 # WB-004: Task Sorting and Pagination
 # WB-005 Dependency Injection
+# WB-006 — Authentication with OAuth2 and JWT
 
 import math
 
@@ -11,11 +12,32 @@ from fastapi import FastAPI, HTTPException, status, Query, Depends
 from pydantic import BaseModel, Field
 from enum import Enum
 import itertools
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime, timezone, timedelta
 from typing import Annotated
+from pwdlib import PasswordHash
+import jwt
+from jwt.exceptions import InvalidTokenError
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 app = FastAPI()
 tasks_db = []
+SECRET_KEY = "my-super-secret-key"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+password_hash = PasswordHash.recommended()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+users_db = {
+    "alice": {
+        "username": "alice",
+        "hashed_password": password_hash.hash("passwordsecret123"),
+    }
+}
+
+password_hash = PasswordHash.recommended()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
 
 _id_counter = itertools.count(1)
 
@@ -77,6 +99,15 @@ class PageSortTask(BaseModel):
     total_pages: int
 
 
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+
+class User(BaseModel):
+    username: str
+
+
 def find_task_by_id(task_id: int) -> TasksOut | None:
     for task in tasks_db:
         if task.id == task_id:
@@ -104,13 +135,61 @@ def order_reverse(order):
     return order == SortOrder.desc
 
 
+def get_user(username):
+    user = users_db.get(username)
+    return user
+
+
+def authenticate_user(username, password):
+    user = get_user(username)
+    if not user:
+        return None
+    correct_password = password_hash.verify(password, user["hashed_password"])
+    if not correct_password:
+        return None
+
+    return user
+
+
+def create_token(username):
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload = {"sub": username, "exp": expire}
+    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+    return token
+
+
+def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
+
+    credentiel_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="invalid credentials",
+        headers={"WWW-Authenticate": "bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if not payload:
+            raise credentiel_exception
+        username = payload.get("sub")
+        if username is None:
+            raise credentiel_exception
+    except InvalidTokenError:
+        raise credentiel_exception
+    user = get_user(username)
+    if user is None:
+        raise credentiel_exception
+    return User(username=user["username"])
+
+
 @app.get("/health", status_code=status.HTTP_200_OK)
 async def get_health():
     return {"status": "ok"}
 
 
 @app.post("/tasks", status_code=201)
-async def create_tasks(task_in: TasksIn) -> TasksOut:
+async def create_tasks(
+    current_user: Annotated[User, Depends(get_current_user)], task_in: TasksIn
+) -> TasksOut:
     task = TasksOut(
         **task_in.model_dump(),
         id=next_id(),
@@ -123,6 +202,7 @@ async def create_tasks(task_in: TasksIn) -> TasksOut:
 
 @app.get("/tasks")
 async def get_tasks(
+    current_user: Annotated[User, Depends(get_current_user)],
     status: StatusVar | None = None,
     priority: PriorityVar | None = None,
     page: int = Query(1, ge=1),
@@ -174,14 +254,19 @@ async def get_tasks(
 
 
 @app.get("/tasks/{task_id}", status_code=status.HTTP_200_OK)
-async def get_tasks_by_id(task: Annotated[TasksOut, Depends(find_task_by_id)]):
+async def get_tasks_by_id(
+    current_user: Annotated[User, Depends(get_current_user)],
+    task: Annotated[TasksOut, Depends(find_task_by_id)],
+):
 
     return task
 
 
 @app.patch("/tasks/{task_id}", status_code=status.HTTP_200_OK)
 async def update_tasks(
-    task: Annotated[TasksOut, Depends(find_task_by_id)], data: UpdateData
+    task: Annotated[TasksOut, Depends(find_task_by_id)],
+    data: UpdateData,
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
     stored_data = task.model_dump()
     updated_data = data.model_dump(exclude_unset=True)
@@ -193,5 +278,22 @@ async def update_tasks(
 
 
 @app.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_task(task: Annotated[TasksOut, Depends(find_task_by_id)]):
+async def delete_task(
+    current_user: Annotated[User, Depends(get_current_user)],
+    task: Annotated[TasksOut, Depends(find_task_by_id)],
+):
     tasks_db.remove(task)
+
+
+@app.post("/token", response_model=Token)
+async def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
+
+    user = authenticate_user(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=("pasword or userbame are incorrect"),
+        )
+
+    access_token = create_token(user["username"])
+    return {"access_token": access_token, "token_type": "bearer"}
