@@ -28,16 +28,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 password_hash = PasswordHash.recommended()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-users_db = {
-    "alice": {
-        "username": "alice",
-        "hashed_password": password_hash.hash("passwordsecret123"),
-    }
-}
-
-password_hash = PasswordHash.recommended()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
+users_db = {}
 
 _id_counter = itertools.count(1)
 
@@ -85,7 +76,7 @@ class TasksOut(TasksIn):
 
 class UpdateData(BaseModel):
 
-    title: str = Field(default=None, min_length=3, max_length=100)
+    title: str | None = Field(default=None, min_length=3, max_length=100)
     description: str | None = Field(default=None, max_length=500)
     priority: PriorityVar | None = None
     status: StatusVar | None = None
@@ -105,6 +96,15 @@ class Token(BaseModel):
 
 
 class User(BaseModel):
+    username: str
+
+
+class UserCreate(BaseModel):
+    username: str = Field(min_length=3, max_length=50)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class UserOut(BaseModel):
     username: str
 
 
@@ -164,7 +164,7 @@ def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
     credentiel_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="invalid credentials",
-        headers={"WWW-Authenticate": "bearer"},
+        headers={"WWW-Authenticate": "Bearer"},
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -292,8 +292,23 @@ async def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=("pasword or userbame are incorrect"),
+            detail=("password or username are incorrect"),
         )
 
     access_token = create_token(user["username"])
     return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.post("/register", status_code=status.HTTP_201_CREATED)
+async def registre(form_data: UserCreate) -> UserOut:
+    user = get_user(form_data.username)
+    if user:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="username already registered"
+        )
+    users_db[form_data.username] = {
+        "username": form_data.username,
+        "hashed_password": password_hash.hash(form_data.password),
+    }
+
+    return {"username": form_data.username}
